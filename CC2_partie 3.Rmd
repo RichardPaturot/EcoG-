@@ -1,0 +1,193 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+#ALPHA DIVERSITÉE
+###Méthode plus simple en continuité avec le tutoriel pour avoir l'alpha diversité le soucis proviens du fait que je n'ai pas réussis a faire un fichier csv qui soit correcte pour le programme. Piste a essayer pour ce problème serait de le faire un tableau manuellement.
+
+```{bash}
+wget ftp.sra.ebi.ac.uk/vol1/run/ERR583/ERR583405/B_S12_L001_R1_001.fastq.gz
+wget ftp.sra.ebi.ac.uk/vol1/run/ERR583/ERR583405/B_S12_L001_R2_001.fastq.gz
+```
+
+```{r}
+.cran_packages <- c("ggplot2", "gridExtra", "devtools")
+install.packages(.cran_packages) 
+.bioc_packages <- c("dada2", "phyloseq", "DECIPHER", "phangorn")
+BiocManager::install(.bioc_packages)
+sapply(c(.cran_packages, .bioc_packages), require, character.only = TRUE)
+```
+
+```{r}
+set.seed(100)
+miseq_path <- "/home/rstudio/mydatalocal/Richard/richard data"
+list.files(miseq_path)
+```
+
+##Filter and Trim
+
+```{r}
+fnFs <- sort(list.files(miseq_path, pattern = "_R1_001.fastq"))
+fnRs <- sort(list.files(miseq_path, pattern = "_R2_001.fastq"))
+sampleNames <- sapply(strsplit(fnFs, "_"), `[`, 1)
+fnFs <- file.path(miseq_path, fnFs)
+fnRs <- file.path(miseq_path, fnRs)
+```
+
+
+```{r}
+fnFs[1:3]
+fnRs[1:3]
+plotQualityProfile(fnFs[1:2])
+```
+
+```{r}
+plotQualityProfile(fnRs[1:2])
+````
+
+
+````{r}
+filt_path <- file.path(miseq_path, "filtered") 
+if(!file_test("-d", filt_path)) dir.create(filt_path)
+filtFs <- file.path(filt_path, paste0(sampleNames, "_F_filt.fastq.gz"))
+filtRs <- file.path(filt_path, paste0(sampleNames, "_R_filt.fastq.gz"))
+```
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160), maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE, compress=TRUE, multithread=FALSE) # On Windows set multithread=FALSE
+head(out)
+```
+##Infer sequence variants
+###Dereplication
+```{r}
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+
+names(derepFs) <- sampleNames
+names(derepRs) <- sampleNames
+```
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+```
+```{r}
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+```{r}
+plotErrors(errF)
+plotErrors(errR)
+```
+```{r}
+dadaFs <- dada(derepFs, err=errF, multithread=TRUE)
+```
+```{r}
+dadaRs <- dada(derepRs, err=errR, multithread=TRUE)
+```
+```{r}
+dadaFs[[1]]
+```
+##Construct sequence table and remove chimeras
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs)
+```
+```{r}
+seqtabAll <- makeSequenceTable(mergers[!grepl("Mock", names(mergers))])
+table(nchar(getSequences(seqtabAll)))
+```
+```{bash}
+cd ~
+wget  https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz
+```
+```{r}
+seqtabNoC <- removeBimeraDenovo(seqtabAll)
+```
+##Assign taxonomy
+```{r}
+fastaRef <-"/home/rstudio/silva_nr99_v138.1_train_set.fa.gz"
+taxTab<-assignTaxonomy(seqtabNoC, refFasta=fastaRef, multithread=TRUE)
+unname(head(taxTab))
+```
+##Construct phylogenetic tree
+```{r}
+seqs <- getSequences(seqtabNoC)
+names(seqs) <- seqs 
+alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA,verbose=FALSE)
+```
+```{r}
+phangAlign <- phyDat(as(alignment, "matrix"), type="DNA")
+dm <- dist.ml(phangAlign)
+treeNJ <- NJ(dm)
+fit = pml(treeNJ, data=phangAlign)
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+        rearrangement = "stochastic", control = pml.control(trace = 0))
+detach("package:phangorn", unload=TRUE)
+```
+##Combine data into a phyloseq object
+```{r}
+samdf <- read.csv("https://raw.githubusercontent.com/RichardPaturot/2/master/filereport_read_run_PRJEB7059_json.csv",header=TRUE)
+samdf$SampleID <- paste0(gsub("00", "", samdf$host_subject_id), "D", samdf$age-21)
+samdf <- samdf[!duplicated(samdf$SampleID),] 
+rownames(seqtabAll) <- gsub("124", "125", rownames(seqtabAll))
+all(rownames(seqtabAll) %in% samdf$SampleID)
+```
+```{r}
+rownames(samdf) <- samdf$SampleID
+keep.cols <- c("collection_date", "biome", "target_gene", "target_subfragment",
+"host_common_name", "host_subject_id", "age", "sex", "body_product", "tot_mass",
+"diet", "family_relationship", "genotype", "SampleID") 
+samdf <- samdf[rownames(seqtabAll), keep.cols] #soucis à ce niveau pas encore résolu
+```
+```{r}
+ps <- phyloseq(otu_table(seqtabNoC, taxa_are_rows=FALSE), sample_data(samdf), tax_table(taxTab),phy_tree(fitGTR$tree))
+ps <- prune_samples(sample_names(ps) != "Mock", ps)
+ps
+```
+#Using phyloseq
+##Loading the data
+```{r}
+ps_connect <-url("https://raw.githubusercontent.com/spholmes/F1000_workflow/master/data/ps.rds")#soucis à ce niveau pas encore résolus
+ps = readRDS(ps_connect)
+ps
+```
+##Filtering
+###Taxonomic Filtering
+```{r}
+rank_names(ps)
+```
+```{r}
+ps <- subset_taxa(ps, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+```
+```{r}
+
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    tax_table(ps))
+```
+```{r}
+plyr::ddply(prevdf, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+```{r}
+# Define phyla to filter
+filterPhyla = c("Fusobacteria", "Deinococcus-Thermus")
+# Filter entries with unidentified Phylum.
+ps1 = subset_taxa(ps, !Phylum %in% filterPhyla)
+ps1
+```
+
+
+##Diversitée Alpha
+###D'après ce que j'ai compris ici il fallait créer un objet ps dans lequel on aurait tout les échantillons de la source hydrothermale mais étant coincé plus haut je n'ai pas pus essayer de creer cet objet.
+```{r}
+ps
+estimate_richness(ps, split = TRUE, measures = c("Observed", "Chao1", "Shannon"))
+```
+
+```{r}
+plot_richness(ps, measures=c("Observed", "Chao1", "Shannon"), title = "L'Alpha diversitée des sources hydrothermal")
+```
+

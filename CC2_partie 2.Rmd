@@ -1,0 +1,88 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+#Alpha et beta diversité
+###La méthode présenter ici permet de determiner la diversité spécifique de chaque jeu d'échantillons et ainsi obtenir l'alpha diversité. Par la suite on va présenter nos résultats sous des formes différente en les comparants entre eux ce qui permet d'obtenir la béta diversité
+
+library(ggpubr)
+
+#******************** COMPARTMENTS **************************
+
+#* TABLES
+
+#metadata (table with samples and various variables / factors)
+metadata <- read.csv(file = ".fichier.csv", sep = '\t', header = T, check.names = F)
+###Ici il aurait fallut creer un fichier au format csv dans lequelle on aurait créer un tableau ou on aurait mis les deux jeu de donnée ceux de mon article et du tutoriel dada 2
+metadata$group <- factor(metadata$group, levels = c("source_hydrothermal", "tutoriel"))
+###création de different groupe de métadonnée
+
+#richness
+rar_df_alpha <- t(rar_df[,-c(1:5)])
+richness <- specnumber(rar_df_alpha)
+richness_compartment <- specnumber(rar_df_alpha, groups = metadata$group)
+
+#diversity including abundance (shannon)
+shannon <- diversity(rar_df_alpha, index = "shannon")
+
+#equitability
+evenness <- shannon / log(richness)
+
+
+#--------------------
+
+#* PLOTS
+
+#richness + significance
+test <- data.frame(richness = richness, group = metadata$group)
+my_comparisons = list(c("source_hydrothermal", "tutoriel")
+symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns"))
+ggboxplot(data = test, x = "group", y = "richness", color = c("orange","lightblue2")) +
+  stat_compare_means(comparisons = my_comparisons, method = "t.test", symnum.args = symnum.args,
+                     show.legend = NA)
+
+#richness Vs shannnon
+plot(richness, shannon, col = as.numeric(metadata$group))
+legend(x = 20, y = 4.5, c("source_hydrothermal", "tutoriel"), cex=1, 
+       col = c("blue","black", pch = c(1,1))
+
+#richness and compartments
+boxplot(richness ~metadata$group)
+
+#all indexes
+par(mfrow = c(1, 3))
+boxplot(richness ~ metadata$group, main = "richness")
+boxplot(shannon ~ metadata$group, main = "shannon")
+boxplot(evenness ~ metadata$group, main = "evenness")
+
+dev.off()
+
+
+#--------------------
+
+## Venn Diagram
+###Ce diagramme permet de visualiser l'alpha et la beta diversité puisqu'il va montrer les similarité entre nos 2 jeux de donnée. 
+#lists
+l_source_hydrothermal <- rar_df %>%
+  select(OTUID, rar_sample_list[00:00]) %>% #ici on selectionne des echantillons
+  filter(rowSums(.[,-1] > 0) > 0) %>% #keep lines with at least 1 value
+  .$OTUID
+length(l_source_hydrothermal)
+
+l_tutoriel <- rar_df %>%
+  select(OTUID, rar_sample_list[00:00]) %>% 
+  filter(rowSums(.[,-1] > 0) > 0) %>% 
+  .$OTUID
+length(l_tutoriel)
+
+#VennDiagram
+library(VennDiagram)
+VennDiagram::venn.diagram(list("source_hydrothermal\n(n=00)" = l_source_hydrothermal, "tutoriel\n(n=00)" = l_tutoriel),
+                          cat.pos = c(-4,-85), 
+                          fill = c("orange","goldenrod3"), cex = 0.9,
+                          main = "Venn diagram of ASV shared between compartments at day 28",
+                          main.fontface = "bold", main.pos = c(0.5,0.76), main.cex = 0.9,
+                          filename = "./2_R/figure/compartments_Venn.tiff", margin = 0.8)
+
